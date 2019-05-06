@@ -57,7 +57,7 @@ class Gan:
             score = metric.get_score()
             log += metric.get_name() + ":" + str(score) + '\t'
             toc = time()
-            print('time elapsed of ' + metric.get_name() + ': ' + str(toc - tic))
+            #print('time elapsed of ' + metric.get_name() + ': ' + str(toc - tic))
             scores.append(score)
         print(log)
         return scores

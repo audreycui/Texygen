@@ -10,6 +10,9 @@ from utils.metrics.EmbSim import EmbSim
 from utils.metrics.Nll import Nll
 from utils.oracle.OracleLstm import OracleLstm
 from utils.utils import *
+from utils.text_process import code_to_text
+
+from tqdm import tqdm
 
 
 def pre_train_epoch_gen(sess, trainable_model, data_loader):
@@ -37,6 +40,7 @@ def generate_samples_gen(sess, trainable_model, batch_size, generated_num, outpu
             for poem in generated_samples:
                 buffer = ' '.join([str(x) for x in poem]) + '\n'
                 fout.write(buffer)
+                #print(buffer)
                 if get_code:
                     codes.append(poem)
         return np.array(codes)
@@ -45,6 +49,7 @@ def generate_samples_gen(sess, trainable_model, batch_size, generated_num, outpu
     for poem in generated_samples:
         buffer = ' '.join([str(x) for x in poem]) + '\n'
         codes += buffer
+    #print(codes)
     return codes
 
 
@@ -53,23 +58,23 @@ class Leakgan(Gan):
         super().__init__()
         # you can change parameters, generator here
         self.vocab_size = 20
-        self.emb_dim = 32
-        self.hidden_dim = 32
+        self.emb_dim = 256
+        self.hidden_dim = 256
         flags = tf.app.flags
         FLAGS = flags.FLAGS
         flags.DEFINE_boolean('restore', False, 'Training or testing a model')
         flags.DEFINE_boolean('resD', False, 'Training or testing a D model')
-        flags.DEFINE_integer('length', 20, 'The length of toy data')
+        flags.DEFINE_integer('length', 70, 'The length of toy data')
         flags.DEFINE_string('model', "", 'Model NAME')
-        self.sequence_length = FLAGS.length
+        self.sequence_length = 70 #FLAGS.length
         self.filter_size = [2, 3]
         self.num_filters = [100, 200]
         self.l2_reg_lambda = 0.2
         self.dropout_keep_prob = 0.75
-        self.batch_size = 64
+        self.batch_size = 8
         self.generate_num = 256
         self.start_token = 0
-        self.dis_embedding_dim = 64
+        self.dis_embedding_dim = 512
         self.goal_size = 16
 
         self.oracle_file = 'save/oracle.txt'
@@ -206,7 +211,7 @@ class Leakgan(Gan):
                          self.generator.worker_loss, ], feed_dict=feed)
                     print('epoch', str(epoch), 'g_loss', g_loss, 'w_loss', w_loss)
                     end = time()
-                    print('epoch:' + str(epoch) + '--' + str(epoch_) + '\t time:' + str(end - start))
+                    #print('epoch:' + str(epoch) + '--' + str(epoch_) + '\t time:' + str(end - start))
                     if self.epoch % 5 == 0 or self.epoch == self.adversarial_epoch_num - 1:
                         generate_samples_gen(self.sess, self.generator, self.batch_size, self.generate_num,
                                              self.generator_file)
@@ -304,7 +309,7 @@ class Leakgan(Gan):
             start = time()
             loss = pre_train_epoch_gen(self.sess, self.generator, self.gen_data_loader)
             end = time()
-            print('epoch:' + str(self.epoch) + '\t time:' + str(end - start))
+            print('epoch:' + str(self.epoch) + '\t loss:' + str(loss))
             self.add_epoch()
             if epoch % 5 == 0:
                 generate_samples_gen(self.sess, self.generator, self.batch_size, self.generate_num, self.generator_file)
@@ -361,13 +366,13 @@ class Leakgan(Gan):
                 print('epoch:' + str(epoch) + '--' + str(epoch_))
                 self.train_discriminator()
 
-    def init_real_trainng(self, data_loc=None):
+    def init_real_training(self, data_loc=None):
         from utils.text_process import text_precess, text_to_code
         from utils.text_process import get_tokenlized, get_word_list, get_dict
         if data_loc is None:
             data_loc = 'data/image_coco.txt'
         self.sequence_length, self.vocab_size = text_precess(data_loc)
-
+        print("sequence length:", self.sequence_length, " vocab size:", self.vocab_size)
         goal_out_size = sum(self.num_filters)
         discriminator = Discriminator(sequence_length=self.sequence_length, num_classes=2, vocab_size=self.vocab_size,
                                       dis_emb_dim=self.dis_embedding_dim, filter_sizes=self.filter_size,
@@ -409,50 +414,54 @@ class Leakgan(Gan):
     def train_real(self, data_loc=None):
         from utils.text_process import code_to_text
         from utils.text_process import get_tokenlized
-        wi_dict, iw_dict = self.init_real_trainng(data_loc)
+        wi_dict, iw_dict = self.init_real_training(data_loc)
         self.init_real_metric()
-
+        #print("after init_real_metric")
         def get_real_test_file(dict=iw_dict):
             with open(self.generator_file, 'r') as file:
                 codes = get_tokenlized(self.generator_file)
             with open(self.test_file, 'w') as outfile:
                 outfile.write(code_to_text(codes=codes, dictionary=dict))
-
+        #print("before sess run")
         self.sess.run(tf.global_variables_initializer())
-
+        #print("after sess run for global init")
         self.pre_epoch_num = 80
         self.adversarial_epoch_num = 100
         self.log = open('experiment-log-leakgan-real.csv', 'w')
-        generate_samples_gen(self.sess, self.generator, self.batch_size, self.generate_num, self.generator_file)
+        #print("before generate sample gen")
+        codes = generate_samples_gen(self.sess, self.generator, self.batch_size, self.generate_num, self.generator_file)
+        print(code_to_text(codes=codes, dictionary=iw_dict))
+        #print("after generate sample_gen")
         self.gen_data_loader.create_batches(self.oracle_file)
 
         for a in range(1):
             g = self.sess.run(self.generator.gen_x, feed_dict={self.generator.drop_out: 1, self.generator.train: 1})
-
-        print('start pre-train generator:')
-        for epoch in range(self.pre_epoch_num):
+            #print(g)
+        #print('start pre-train generator:')
+        for epoch in tqdm(list(range(self.pre_epoch_num)), desc='Pretraining generator'):
             start = time()
             loss = pre_train_epoch_gen(self.sess, self.generator, self.gen_data_loader)
             end = time()
-            print('epoch:' + str(self.epoch) + '\t time:' + str(end - start))
+            #print('epoch:' + str(self.epoch) + '\t time:' + str(end - start))
             self.add_epoch()
             if epoch % 5 == 0:
-                generate_samples_gen(self.sess, self.generator, self.batch_size, self.generate_num, self.generator_file)
+                codes = generate_samples_gen(self.sess, self.generator, self.batch_size, self.generate_num, self.generator_file)
+                print(code_to_text(codes=codes, dictionary=iw_dict))
                 get_real_test_file()
                 self.evaluate()
 
-        print('start pre-train discriminator:')
+        #print('start pre-train discriminator:')
         self.reset_epoch()
-        for epoch in range(self.pre_epoch_num):
-            print('epoch:' + str(epoch))
+        for epoch in tqdm(list(range(self.pre_epoch_num)), desc='Pretraining discriminator'):
+            #print('epoch:' + str(epoch))
             self.train_discriminator()
 
 
         self.reset_epoch()
         self.reward = Reward(model=self.generator, dis=self.discriminator, sess=self.sess, rollout_num=4)
-        for epoch in range(self.adversarial_epoch_num//10):
+        for epoch in tqdm(list(range(self.adversarial_epoch_num//10)), desc='Adverarial training'):
             for epoch_ in range(10):
-                print('epoch:' + str(epoch) + '--' + str(epoch_))
+                #print('epoch:' + str(epoch) + '--' + str(epoch_))
                 start = time()
                 for index in range(1):
                     samples = self.generator.generate(self.sess, 1)
@@ -468,9 +477,10 @@ class Leakgan(Gan):
                     print('epoch', str(epoch), 'g_loss', g_loss, 'w_loss', w_loss)
                 end = time()
                 self.add_epoch()
-                print('epoch:' + str(epoch) + '--' + str(epoch_) + '\t time:' + str(end - start))
+                #print('epoch:' + str(epoch) + '--' + str(epoch_) + '\t time:' + str(end - start))
                 if epoch % 5 == 0 or epoch == self.adversarial_epoch_num - 1:
-                    generate_samples_gen(self.sess, self.generator, self.batch_size, self.generate_num, self.generator_file)
+                    codes = generate_samples_gen(self.sess, self.generator, self.batch_size, self.generate_num, self.generator_file)
+                    print(code_to_text(codes=codes, dictionary=iw_dict))
                     get_real_test_file()
                     self.evaluate()
 
@@ -480,13 +490,14 @@ class Leakgan(Gan):
                 start = time()
                 loss = pre_train_epoch_gen(self.sess, self.generator, self.gen_data_loader)
                 end = time()
-                print('epoch:' + str(epoch) + '--' + str(epoch_) + '\t time:' + str(end - start))
+                #print('epoch:' + str(epoch) + '--' + str(epoch_) + '\t time:' + str(end - start))
                 if epoch % 5 == 0:
-                    generate_samples_gen(self.sess, self.generator, self.batch_size, self.generate_num,
+                    codes = generate_samples_gen(self.sess, self.generator, self.batch_size, self.generate_num,
                                          self.generator_file)
+                    print(code_to_text(codes=codes, dictionary=iw_dict))
                     get_real_test_file()
                     # self.evaluate()
             for epoch_ in range(5):
-                print('epoch:' + str(epoch) + '--' + str(epoch_))
+                #print('epoch:' + str(epoch) + '--' + str(epoch_))
                 self.train_discriminator()
 
