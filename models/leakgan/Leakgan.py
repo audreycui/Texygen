@@ -1,5 +1,6 @@
 from time import time
-
+import os
+import numpy as np
 from models.Gan import Gan
 from models.leakgan.LeakganDataLoader import DataLoader, DisDataloader
 from models.leakgan.LeakganDiscriminator import Discriminator
@@ -15,15 +16,17 @@ from utils.text_process import code_to_text
 from tqdm import tqdm
 
 
-def pre_train_epoch_gen(sess, trainable_model, data_loader):
+def pre_train_epoch_gen(sess, trainable_model, data_loader, writer):
     # Pre-train the generator using MLE for one epoch
     supervised_g_losses = []
     data_loader.reset_pointer()
 
     for it in range(data_loader.num_batch):
-        batch = data_loader.next_batch()
-        _, g_loss, _, _ = trainable_model.pretrain_step(sess, batch, .8)
+        sentences, features = data_loader.next_batch()
+        #print("shape" + str(features.shape))
+        _, g_loss, _, _, summary = trainable_model.pretrain_step(sess, sentences, features, .8)
         supervised_g_losses.append(g_loss)
+        writer.add_summary(summary, it)
 
     return np.mean(supervised_g_losses)
 
@@ -54,8 +57,8 @@ def generate_samples_gen(sess, trainable_model, batch_size, generated_num, outpu
 
 
 class Leakgan(Gan):
-    def __init__(self, oracle=None):
-        super().__init__()
+    def __init__(self, config, oracle=None):
+        super().__init__(config)
         # you can change parameters, generator here
         self.vocab_size = 20
         self.emb_dim = 256
@@ -71,10 +74,10 @@ class Leakgan(Gan):
         self.num_filters = [100, 200]
         self.l2_reg_lambda = 0.2
         self.dropout_keep_prob = 0.75
-        self.batch_size = 8
-        self.generate_num = 256
-        self.start_token = 0
-        self.dis_embedding_dim = 512
+        self.batch_size = 16
+        self.generate_num = 16
+        self.start_token = config._START_
+        self.dis_embedding_dim = 256
         self.goal_size = 16
 
         self.oracle_file = 'save/oracle.txt'
@@ -132,14 +135,16 @@ class Leakgan(Gan):
     def train_discriminator(self):
         generate_samples_gen(self.sess, self.generator, self.batch_size, self.generate_num, self.generator_file)
         self.dis_data_loader.load_train_data(self.oracle_file, self.generator_file)
-        for _ in range(3):
+        for epoch in range(3):
             self.dis_data_loader.next_batch()
             x_batch, y_batch = self.dis_data_loader.next_batch()
             feed = {
                 self.discriminator.D_input_x: x_batch,
                 self.discriminator.D_input_y: y_batch,
             }
-            _, _ = self.sess.run([self.discriminator.D_loss, self.discriminator.D_train_op], feed)
+            _, _, summary = self.sess.run([self.discriminator.D_loss, self.discriminator.D_train_op, self.discriminator.D_summary], feed)
+            self.writer.add_summary(summary, epoch)
+
             self.generator.update_feature_function(self.discriminator)
 
     def evaluate(self):
@@ -206,10 +211,11 @@ class Leakgan(Gan):
                         self.generator.reward: rewards,
                         self.generator.drop_out: 1
                     }
-                    _, _, g_loss, w_loss = self.sess.run(
+                    _, _, g_loss, w_loss, g_summary = self.sess.run(
                         [self.generator.manager_updates, self.generator.worker_updates, self.generator.goal_loss,
-                         self.generator.worker_loss, ], feed_dict=feed)
-                    print('epoch', str(epoch), 'g_loss', g_loss, 'w_loss', w_loss)
+                         self.generator.worker_loss, self.generator.g_summary], feed_dict=feed)
+                    #print('epoch', str(epoch), 'g_loss', g_loss, 'w_loss', w_loss)
+                    self.writer.add_summary(g_summary, epoch*10+epoch_)
                     end = time()
                     #print('epoch:' + str(epoch) + '--' + str(epoch_) + '\t time:' + str(end - start))
                     if self.epoch % 5 == 0 or self.epoch == self.adversarial_epoch_num - 1:
@@ -304,7 +310,7 @@ class Leakgan(Gan):
         generate_samples_gen(self.sess, self.generator, self.batch_size, self.generate_num, self.generator_file)
         self.gen_data_loader.create_batches(self.oracle_file)
         self.oracle_data_loader.create_batches(self.generator_file)
-        print('start pre-train generator:')
+        #print('start pre-train generator:')
         for epoch in range(self.pre_epoch_num):
             start = time()
             loss = pre_train_epoch_gen(self.sess, self.generator, self.gen_data_loader)
@@ -316,14 +322,14 @@ class Leakgan(Gan):
                 get_cfg_test_file()
                 self.evaluate()
 
-        print('start pre-train discriminator:')
+        #print('start pre-train discriminator:')
         self.reset_epoch()
         for epoch in range(self.pre_epoch_num * 3):
             print('epoch:' + str(epoch))
             self.train_discriminator()
 
         self.reset_epoch()
-        print('adversarial training:')
+        #print('adversarial training:')
         self.reward = Reward(model=self.generator, dis=self.discriminator, sess=self.sess, rollout_num=4)
         for epoch in range(self.adversarial_epoch_num//10):
             for epoch_ in range(10):
@@ -366,14 +372,15 @@ class Leakgan(Gan):
                 print('epoch:' + str(epoch) + '--' + str(epoch_))
                 self.train_discriminator()
 
-    def init_real_training(self, data_loc=None):
-        from utils.text_process import text_precess, text_to_code
+    def init_real_training(self, data_loc=None, with_image=True):
+        from utils.text_process import text_precess, text_to_code, process_train_data
         from utils.text_process import get_tokenlized, get_word_list, get_dict
-        if data_loc is None:
-            data_loc = 'data/image_coco.txt'
-        self.sequence_length, self.vocab_size = text_precess(data_loc)
+
+        self.sequence_length, self.vocab_size, vocabulary = process_train_data(self.config, data_loc, has_image=with_image)
+        ##self.sequence_length, self.vocab_size, index_word_dict = text_precess(data_loc, oracle_file=self.config.temp_oracle_file)
         print("sequence length:", self.sequence_length, " vocab size:", self.vocab_size)
         goal_out_size = sum(self.num_filters)
+
         discriminator = Discriminator(sequence_length=self.sequence_length, num_classes=2, vocab_size=self.vocab_size,
                                       dis_emb_dim=self.dis_embedding_dim, filter_sizes=self.filter_size,
                                       num_filters=self.num_filters,
@@ -390,69 +397,75 @@ class Leakgan(Gan):
                               num_filters=self.num_filters, goal_out_size=goal_out_size, D_model=discriminator,
                               step_size=4)
         self.set_generator(generator)
-        gen_dataloader = DataLoader(batch_size=self.batch_size, seq_length=self.sequence_length)
+
+        # data loader for generator and discriminator
+        gen_dataloader = DataLoader(self.config, batch_size=self.batch_size, seq_length=self.sequence_length)
+        gen_dataloader.create_batches_v2(self.config, with_image)
+
         oracle_dataloader = None
-        dis_dataloader = DisDataloader(batch_size=self.batch_size, seq_length=self.sequence_length)
+        dis_dataloader = DisDataloader(self.config, batch_size=self.batch_size, seq_length=self.sequence_length)
 
         self.set_data_loader(gen_loader=gen_dataloader, dis_loader=dis_dataloader, oracle_loader=oracle_dataloader)
-        tokens = get_tokenlized(data_loc)
-        word_set = get_word_list(tokens)
-        [word_index_dict, index_word_dict] = get_dict(word_set)
-        with open(self.oracle_file, 'w') as outfile:
-            outfile.write(text_to_code(tokens, word_index_dict, self.sequence_length))
-        return word_index_dict, index_word_dict
+
+        #print("done initializing training")
+        return vocabulary
 
     def init_real_metric(self):
-        from utils.metrics.DocEmbSim import DocEmbSim
-        docsim = DocEmbSim(oracle_file=self.oracle_file, generator_file=self.generator_file, num_vocabulary=self.vocab_size)
-        self.add_metric(docsim)
+        #from utils.metrics.DocEmbSim import DocEmbSim
+        #docsim = DocEmbSim(oracle_file=self.oracle_file, generator_file=self.generator_file, num_vocabulary=self.vocab_size)
+        #self.add_metric(docsim)
 
         inll = Nll(data_loader=self.gen_data_loader, rnn=self.generator, sess=self.sess)
         inll.set_name('nll-test')
         self.add_metric(inll)
+        print("done initializing metric")
 
-    def train_real(self, data_loc=None):
-        from utils.text_process import code_to_text
+    def train_real(self, data_loc=None, with_image=True):
         from utils.text_process import get_tokenlized
-        wi_dict, iw_dict = self.init_real_training(data_loc)
+        vocabulary = self.init_real_training(data_loc, with_image)
         self.init_real_metric()
-        #print("after init_real_metric")
-        def get_real_test_file(dict=iw_dict):
+
+        def get_real_test_file(vocab=vocabulary):
             with open(self.generator_file, 'r') as file:
                 codes = get_tokenlized(self.generator_file)
             with open(self.test_file, 'w') as outfile:
-                outfile.write(code_to_text(codes=codes, dictionary=dict))
-        #print("before sess run")
+                outfile.write(vocab.code_to_text(codes))
+        
         self.sess.run(tf.global_variables_initializer())
-        #print("after sess run for global init")
+        
+        if not os.path.exists(self.config.summary_dir):
+            os.mkdir(self.config.summary_dir)
+        self.writer = tf.summary.FileWriter(self.config.summary_dir, self.sess.graph)
+
         self.pre_epoch_num = 80
         self.adversarial_epoch_num = 100
         self.log = open('experiment-log-leakgan-real.csv', 'w')
-        #print("before generate sample gen")
+
         codes = generate_samples_gen(self.sess, self.generator, self.batch_size, self.generate_num, self.generator_file)
-        print(code_to_text(codes=codes, dictionary=iw_dict))
-        #print("after generate sample_gen")
-        self.gen_data_loader.create_batches(self.oracle_file)
+        print(vocabulary.code_to_text(codes))
+        #self.evaluate()
 
         for a in range(1):
-            g = self.sess.run(self.generator.gen_x, feed_dict={self.generator.drop_out: 1, self.generator.train: 1})
+            g = self.sess.run(self.generator.gen_x, feed_dict={self.generator.drop_out: 1, self.generator.train: 1, self.generator.conv_features: np.zeros((self.generator.batch_size, self.generator.image_feat_dim), dtype=np.float32)})
             #print(g)
         #print('start pre-train generator:')
-        for epoch in tqdm(list(range(self.pre_epoch_num)), desc='Pretraining generator'):
+        #for epoch in tqdm(list(range(self.pre_epoch_num)), desc='Pretraining generator'):
+        for epoch in tqdm(list(range(1)), desc='Pretraining generator'):
             start = time()
-            loss = pre_train_epoch_gen(self.sess, self.generator, self.gen_data_loader)
+            loss = pre_train_epoch_gen(self.sess, self.generator, self.gen_data_loader, self.writer)
             end = time()
             #print('epoch:' + str(self.epoch) + '\t time:' + str(end - start))
             self.add_epoch()
             if epoch % 5 == 0:
                 codes = generate_samples_gen(self.sess, self.generator, self.batch_size, self.generate_num, self.generator_file)
-                print(code_to_text(codes=codes, dictionary=iw_dict))
+                print(vocabulary.code_to_text(codes))
                 get_real_test_file()
                 self.evaluate()
 
         #print('start pre-train discriminator:')
         self.reset_epoch()
-        for epoch in tqdm(list(range(self.pre_epoch_num)), desc='Pretraining discriminator'):
+        #for epoch in tqdm(list(range(self.pre_epoch_num)), desc='Pretraining discriminator'):
+        for epoch in tqdm(list(range(1)), desc='Pretraining discriminator'):
             #print('epoch:' + str(epoch))
             self.train_discriminator()
 
@@ -469,7 +482,8 @@ class Leakgan(Gan):
                     feed = {
                         self.generator.x: samples,
                         self.generator.reward: rewards,
-                        self.generator.drop_out: 1
+                        self.generator.drop_out: 1.0,
+                        self.generator.conv_features: np.zeros((self.generator.batch_size, self.generator.image_feat_dim), dtype=np.float32)
                     }
                     _, _, g_loss, w_loss = self.sess.run(
                         [self.generator.manager_updates, self.generator.worker_updates, self.generator.goal_loss,
@@ -480,7 +494,7 @@ class Leakgan(Gan):
                 #print('epoch:' + str(epoch) + '--' + str(epoch_) + '\t time:' + str(end - start))
                 if epoch % 5 == 0 or epoch == self.adversarial_epoch_num - 1:
                     codes = generate_samples_gen(self.sess, self.generator, self.batch_size, self.generate_num, self.generator_file)
-                    print(code_to_text(codes=codes, dictionary=iw_dict))
+                    print(vocabulary.code_to_text(codes))
                     get_real_test_file()
                     self.evaluate()
 
@@ -488,16 +502,17 @@ class Leakgan(Gan):
                     self.train_discriminator()
             for epoch_ in range(5):
                 start = time()
-                loss = pre_train_epoch_gen(self.sess, self.generator, self.gen_data_loader)
+                loss = pre_train_epoch_gen(self.sess, self.generator, self.gen_data_loader, self.writer)
                 end = time()
                 #print('epoch:' + str(epoch) + '--' + str(epoch_) + '\t time:' + str(end - start))
                 if epoch % 5 == 0:
                     codes = generate_samples_gen(self.sess, self.generator, self.batch_size, self.generate_num,
                                          self.generator_file)
-                    print(code_to_text(codes=codes, dictionary=iw_dict))
+                    print(vocabulary.code_to_text(codes))
                     get_real_test_file()
-                    # self.evaluate()
+                    self.evaluate()
             for epoch_ in range(5):
                 #print('epoch:' + str(epoch) + '--' + str(epoch_))
                 self.train_discriminator()
 
+        writer.close()        

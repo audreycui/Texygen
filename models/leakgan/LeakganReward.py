@@ -38,7 +38,8 @@ class Reward(object):
         for i in range(self.rollout_num):
             for given_num in range(1, self.model.sequence_length // self.model.step_size):
                 real_given_num = given_num * self.model.step_size
-                feed = {self.model.x: input_x, self.model.given_num: real_given_num, self.model.drop_out: 1.0}
+                feed = {self.model.x: input_x, self.model.given_num: real_given_num, self.model.drop_out: 1.0,
+                        self.model.conv_features: np.zeros((self.model.batch_size, self.model.image_feat_dim), dtype=np.float32)}
                 samples = self.sess.run(self.model.gen_for_reward, feed)
                 # print samples.shape
                 feed = {self.dis.D_input_x: samples}

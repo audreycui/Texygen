@@ -11,8 +11,11 @@ from models.rankgan.Rankgan import Rankgan
 from models.seqgan.Seqgan import Seqgan
 from models.textGan_MMD.Textgan import TextganMmd
 
+from config import Config
 
 def set_gan(gan_name):
+    config = Config()
+
     gans = dict()
     gans['seqgan'] = Seqgan
     gans['gsgan'] = Gsgan
@@ -23,7 +26,7 @@ def set_gan(gan_name):
     gans['mle'] = Mle
     try:
         Gan = gans[gan_name.lower()]
-        gan = Gan()
+        gan = Gan(config)
         gan.vocab_size = 5000
         gan.generate_num = 10000
         return gan
@@ -52,13 +55,14 @@ def set_training(gan, training_method):
 
 def parse_cmd(argv):
     try:
-        opts, args = getopt.getopt(argv, "hg:t:d:")
+        opts, args = getopt.getopt(argv, "hig:t:d:")
 
         opt_arg = dict(opts)
         if '-h' in opt_arg.keys():
             print('usage: python main.py -g <gan_type>')
             print('       python main.py -g <gan_type> -t <train_type>')
             print('       python main.py -g <gan_type> -t real -d <your_data_location>')
+            print('       python main.py -g <gan_type> -t real -d <your_data_location> -i')
             sys.exit(0)
         if not '-g' in opt_arg.keys():
             print('unspecified GAN type, use MLE training only...')
@@ -68,11 +72,14 @@ def parse_cmd(argv):
         if not '-t' in opt_arg.keys():
             gan.train_oracle()
         else:
+            has_image = True
+            if '-i' in opt_arg.keys():
+                has_image = False
             gan_func = set_training(gan, opt_arg['-t'])
             if opt_arg['-t'] == 'real' and '-d' in opt_arg.keys():
-                gan_func(opt_arg['-d'])
+                gan_func(opt_arg['-d'], has_image)
             else:
-                gan_func()
+                gan_func(data_loc=None, with_image=has_image)
     except getopt.GetoptError:
         print('invalid arguments!')
         print('`python main.py -h`  for help')

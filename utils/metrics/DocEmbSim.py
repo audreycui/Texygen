@@ -8,10 +8,10 @@ import tensorflow as tf
 from scipy.spatial.distance import cosine
 
 from utils.metrics.Metrics import Metrics
-
+from utils.vocabulary import Vocabulary
 
 class DocEmbSim(Metrics):
-    def __init__(self, oracle_file=None, generator_file=None, num_vocabulary = None):
+    def __init__(self, oracle_file=None, generator_file=None, num_vocabulary = None, vocab=None):
         super().__init__()
         self.name = 'EmbeddingSimilarity'
         self.oracle_sim = None
@@ -20,10 +20,11 @@ class DocEmbSim(Metrics):
         self.oracle_file = oracle_file
         self.generator_file = generator_file
         self.num_vocabulary = num_vocabulary
-        self.batch_size = 64
-        self.embedding_size = 32
+        self.batch_size = 16
+        self.embedding_size = 256
         self.data_index = 0
         self.valid_examples = None
+        self.vocaulary = vocab
 
     def get_score(self):
         if self.is_first:
@@ -34,6 +35,12 @@ class DocEmbSim(Metrics):
 
     def get_frequent_word(self):
         if self.valid_examples is not None:
+            return self.valid_examples
+
+        if self.vocaulary is not None:
+            wordsets = self.vocaulary.get_frequent_word()
+            self.valid_examples = wordsets[:self.num_vocabulary//10]
+            #print(self.valid_examples)
             return self.valid_examples
 
         import collections

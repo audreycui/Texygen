@@ -98,6 +98,7 @@ class Discriminator(object):
             D_grads_and_vars = d_optimizer.compute_gradients(self.D_loss, self.D_params, aggregation_method=2)
             self.D_train_op = d_optimizer.apply_gradients(D_grads_and_vars)
 
+            self.D_summary = tf.summary.scalar("D_loss", self.D_loss)
 
     # This module used to Extract sentence's Feature
     def FeatureExtractor(self):

@@ -24,11 +24,16 @@ class Nll(Metrics):
         nll = []
         self.data_loader.reset_pointer()
         for it in range(self.data_loader.num_batch):
-            batch = self.data_loader.next_batch()
-            # fixme bad taste
+            sentences, features = self.data_loader.next_batch()
+            #print("get nll loss")
+            drop_out = .8
             try:
-                g_loss = self.rnn.get_nll(self.sess, batch)
+                g_loss = self.rnn.get_nll(self.sess, sentences, features)                                        
             except Exception as e:
-                g_loss = self.sess.run(self.rnn.pretrain_loss, {self.rnn.x: batch})
+                g_loss = self.sess.run(self.rnn.pretrain_loss, 
+                                       feed_dict={self.rnn.x: sentences,
+                                                  self.rnn.conv_features: np.zeros((self.rnn.batch_size, self.rnn.image_feat_dim), dtype=np.float32),
+                                                  self.drop_out: drop_out})
+            print("nll loss:", g_loss)  
             nll.append(g_loss)
         return np.mean(nll)

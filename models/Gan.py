@@ -4,7 +4,8 @@ from utils.utils import init_sess
 
 
 class Gan:
-    def __init__(self):
+    def __init__(self, config = None):
+        self.config = config
         self.oracle = None
         self.generator = None
         self.discriminator = None
